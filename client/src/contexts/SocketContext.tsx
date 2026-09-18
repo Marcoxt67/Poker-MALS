@@ -2,7 +2,9 @@ import { createContext, ReactNode, useContext, useEffect, useRef, useState } fro
 import { io, Socket } from "socket.io-client";
 import { useAuth } from "./AuthContext";
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? "http://localhost:4000";
+// Same-origin default in production (single-service deploys); explicit
+// localhost default only in dev. See services/api.ts for the same pattern.
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? (import.meta.env.DEV ? "http://localhost:4000" : undefined);
 
 const SocketContext = createContext<Socket | null>(null);
 

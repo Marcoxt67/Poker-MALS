@@ -150,6 +150,47 @@ npm run dev:client
 
 Acesse `http://localhost:5173`.
 
+## Deploy (Render)
+
+Em produção, o próprio servidor Express serve tanto a API quanto os arquivos
+estáticos do build do frontend (`client/dist`) a partir da mesma origem — veja
+`server/src/app.ts`. Isso permite implantar o projeto inteiro como **um único
+Web Service** no Render, sem precisar de dois serviços nem configurar CORS.
+
+Configuração do Web Service no Render:
+
+- **Build Command:** `npm install; npm run build`
+- **Start Command:** `npm start`
+  (equivale a `prisma migrate deploy --schema prisma/schema.prisma && npm run start -w server` —
+  aplica as migrations pendentes e então inicia `server/dist/index.js`)
+- **Environment Variables:**
+  - `JWT_SECRET` — um valor aleatório/longo (obrigatório)
+  - `DATABASE_URL` — `file:./dev.db` (padrão do `.env.example`; veja o aviso abaixo)
+  - `CORS_ORIGIN` — pode manter o padrão, já que front e back ficam na mesma origem
+  - `DEFAULT_USER_CHIPS` — opcional, padrão `1000`
+  - **Não** defina `PORT` nem `VITE_API_URL`/`VITE_SOCKET_URL` — o Render injeta
+    `PORT` automaticamente, e deixando as variáveis `VITE_*` de fora o frontend
+    já assume "mesma origem" em produção.
+
+> ⚠️ **Persistência do SQLite no Render.** O disco de um Web Service do Render
+> sem um *persistent disk* é efêmero: o arquivo `prisma/dev.db` (e, portanto,
+> todas as mesas, fichas e histórico) é **recriado do zero a cada novo deploy**.
+> Para uma demonstração isso é aceitável, mas para persistir dados entre
+> deploys você tem duas opções:
+>
+> 1. Adicionar um [Persistent Disk](https://render.com/docs/disks) montado em,
+>    por exemplo, `/var/data`, e apontar `DATABASE_URL=file:/var/data/dev.db`.
+> 2. Migrar para PostgreSQL (recomendado para produção — o schema já foi
+>    desenhado para isso, veja "Migrando para PostgreSQL" acima): crie um banco
+>    Postgres no Render (ou use um serviço gerenciado), troque `provider` em
+>    `prisma/schema.prisma` para `"postgresql"` e aponte `DATABASE_URL` para a
+>    connection string fornecida.
+
+Se preferir implantar o frontend separadamente (ex: como Static Site na Vercel/
+Netlify) em vez do modo "um único serviço", defina `VITE_API_URL` e
+`VITE_SOCKET_URL` apontando para a URL pública do serviço de backend, e ajuste
+`CORS_ORIGIN` no backend para a URL do frontend.
+
 ## Como executar os testes
 
 ```bash
