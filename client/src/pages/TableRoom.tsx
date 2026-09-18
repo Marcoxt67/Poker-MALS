@@ -6,6 +6,7 @@ import { Button } from "../components/Button";
 import { StatusBadge } from "../components/StatusBadge";
 import { TableFelt } from "../components/table/TableFelt";
 import { ActionBar } from "../components/table/ActionBar";
+import { DireControlBar } from "../components/table/DireControlBar";
 import { DirePanel } from "../components/table/DirePanel";
 import { HistoryPanel } from "../components/table/HistoryPanel";
 import { useAuth } from "../contexts/AuthContext";
@@ -127,13 +128,16 @@ export default function TableRoom() {
           </div>
         )}
 
+        {isDire && <DireControlBar table={table} onOpenPanel={() => setShowDire(true)} onChanged={refresh} />}
+
         <TableFelt players={table.players} round={table.activeRound} meUserId={user?.id} />
 
         {feed.length > 0 && (
           <div className="bg-panel/60 border border-white/10 rounded-xl px-4 py-3 max-h-32 overflow-y-auto">
             <p className="text-[10px] text-white/40 uppercase tracking-wide mb-1.5">Atividade recente</p>
             <ul className="space-y-1">
-              {feed.slice(0, 6).map((f) => (
+              {/* The DIRE follows the whole table; a player only needs the last few moves. */}
+              {feed.slice(0, isDire ? 6 : 3).map((f) => (
                 <li key={f.id} className="text-xs text-white/70">
                   {f.text}
                 </li>

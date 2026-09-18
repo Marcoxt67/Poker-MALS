@@ -1,41 +1,24 @@
-import { PrismaClient } from "@prisma/client";
-import { ChipTransactionType } from "../utils/enums";
-
-type Tx = Omit<PrismaClient, "$transaction" | "$connect" | "$disconnect" | "$on" | "$use" | "$extends">;
-
-interface RecordTransactionInput {
-  tableId: string;
-  userId: string;
-  roundId?: string | null;
-  type: ChipTransactionType;
-  amount: number;
-  createdById: string;
-  description: string;
-}
+import { ActionEntry, ChipLedgerEntry } from "../database/models";
+import { paths, pushKey, updatePaths } from "../database/realtime";
 
 /**
- * Every chip movement MUST go through here so it is auditable via ChipTransaction.
- * Never mutate TablePlayer.chips directly anywhere else in the codebase.
+ * Every chip movement and every meaningful table event is journalled here so
+ * the history is auditable. Balances themselves are only ever changed inside a
+ * `/tables/{id}` transaction; this writes the paper trail for that change in a
+ * single atomic fan-out right after it commits.
+ *
+ * Never mutate a player's chips anywhere without journalling the movement.
  */
-export const recordChipTransaction = async (tx: Tx, input: RecordTransactionInput) => {
-  await tx.chipTransaction.create({
-    data: {
-      tableId: input.tableId,
-      userId: input.userId,
-      roundId: input.roundId ?? undefined,
-      type: input.type,
-      amount: input.amount,
-      createdById: input.createdById,
-      description: input.description,
-    },
-  });
+export const writeJournal = async (input: { action: ActionEntry; ledger?: ChipLedgerEntry[] }) => {
+  const updates: Record<string, unknown> = {};
+
+  const historyPath = paths.tableHistory(input.action.tableId);
+  updates[`${historyPath}/${pushKey(historyPath)}`] = input.action;
+
+  for (const entry of input.ledger ?? []) {
+    const ledgerPath = paths.userLedger(entry.userId);
+    updates[`${ledgerPath}/${pushKey(ledgerPath)}`] = entry;
+  }
+
+  await updatePaths(updates);
 };
-
-export const INCREASING_TYPES: ChipTransactionType[] = [
-  ChipTransactionType.ADMIN_ADD,
-  ChipTransactionType.BUY_IN,
-  ChipTransactionType.POT_WIN,
-  ChipTransactionType.REFUND,
-];
-
-export const isIncreasing = (type: ChipTransactionType) => INCREASING_TYPES.includes(type);

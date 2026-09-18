@@ -1,19 +1,44 @@
 import path from "path";
-import { execSync } from "child_process";
-import fs from "fs";
+import { spawn, ChildProcess } from "child_process";
+
+/**
+ * Boots a local Realtime Database emulator for the suite so tests never touch
+ * the real Firebase project.
+ */
+
+const EMULATOR_PORT = 9000;
+const repoRoot = path.resolve(__dirname, "../../..");
+
+const waitForEmulator = async (timeoutMs = 90_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${EMULATOR_PORT}/.json?ns=poker-test`);
+      if (res.ok) return;
+    } catch {
+      // not up yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error("O emulador do Realtime Database não subiu a tempo.");
+};
 
 export default async function setup() {
-  const schemaPath = path.resolve(__dirname, "../../../prisma/schema.prisma");
-  const testDbPath = path.resolve(__dirname, "../../../prisma/test.db");
+  const emulator: ChildProcess = spawn(
+    "npx",
+    ["firebase", "emulators:start", "--only", "database", "--project", "poker-test"],
+    { cwd: repoRoot, stdio: "ignore", detached: true },
+  );
 
-  if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
-
-  execSync(`npx prisma db push --schema "${schemaPath}" --skip-generate --accept-data-loss`, {
-    stdio: "inherit",
-    env: { ...process.env, DATABASE_URL: "file:./test.db" },
-  });
+  await waitForEmulator();
 
   return async () => {
-    if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+    if (emulator.pid) {
+      try {
+        process.kill(-emulator.pid, "SIGKILL");
+      } catch {
+        emulator.kill("SIGKILL");
+      }
+    }
   };
 }

@@ -1,8 +1,21 @@
 import request from "supertest";
-import { prisma } from "../database/prisma";
 import { createApp } from "../app";
 
 export const app = createApp();
+
+/**
+ * Wipes the emulated database between tests through the emulator's REST
+ * endpoint rather than the SDK, so the reset never waits on the realtime
+ * websocket the app itself is using.
+ */
+export const resetDb = async () => {
+  const host = process.env.FIREBASE_DATABASE_EMULATOR_HOST ?? "127.0.0.1:9000";
+  const namespace = new URL(process.env.FIREBASE_DATABASE_URL ?? "https://poker-test-default-rtdb.firebaseio.com")
+    .hostname.split(".")[0];
+
+  const res = await fetch(`http://${host}/.json?ns=${namespace}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Falha ao limpar o emulador: ${res.status} ${await res.text()}`);
+};
 
 let counter = 0;
 export const uniqueSuffix = () => {
@@ -50,14 +63,3 @@ export const joinTable = async (token: string, code: string) => {
   return request(app).post(`/api/tables/join`).set("Authorization", `Bearer ${token}`).send({ code });
 };
 
-export const resetDb = async () => {
-  await prisma.$transaction([
-    prisma.action.deleteMany(),
-    prisma.chipTransaction.deleteMany(),
-    prisma.roundPlayer.deleteMany(),
-    prisma.round.deleteMany(),
-    prisma.tablePlayer.deleteMany(),
-    prisma.table.deleteMany(),
-    prisma.user.deleteMany(),
-  ]);
-};

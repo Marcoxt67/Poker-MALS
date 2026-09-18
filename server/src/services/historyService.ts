@@ -1,47 +1,44 @@
-import { prisma } from "../database/prisma";
+import { ActionEntry, ChipLedgerEntry } from "../database/models";
+import { paths, readKeyed } from "../database/realtime";
 import { AppError } from "../utils/AppError";
+import { TablePlayerRole } from "../utils/enums";
 import { tableService } from "./tableService";
 
+const MAX_ENTRIES = 200;
+
+const newestFirst = <T extends { createdAt: string }>(entries: T[]) =>
+  [...entries].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, MAX_ENTRIES);
+
 export const historyService = {
+  /** The DIRE sees the whole table log; a player only sees their own actions. */
   async getTableHistory(userId: string, tableId: string) {
-    const player = await tableService.getTablePlayerRecord(tableId, userId);
-    if (!player) throw AppError.forbidden("Você não participa desta mesa.");
+    const seat = await tableService.findTablePlayer(tableId, userId);
+    if (!seat) throw AppError.forbidden("Você não participa desta mesa.");
 
-    const isDire = player.role === "DIRE";
+    const entries = await readKeyed<ActionEntry>(paths.tableHistory(tableId));
+    const visible = seat.role === TablePlayerRole.DIRE ? entries : entries.filter((e) => e.userId === userId);
 
-    const actions = await prisma.action.findMany({
-      where: isDire ? { tableId } : { tableId, userId },
-      include: { user: { select: { displayName: true } } },
-      orderBy: { createdAt: "desc" },
-      take: 200,
-    });
-
-    return actions.map((a) => ({
-      id: a.id,
-      type: a.type,
-      amount: a.amount,
-      description: a.description,
-      userDisplayName: a.user?.displayName ?? null,
-      createdAt: a.createdAt,
+    return newestFirst(visible).map((entry) => ({
+      id: entry.id,
+      type: entry.type,
+      amount: entry.amount ?? null,
+      description: entry.description,
+      userDisplayName: entry.userDisplayName ?? null,
+      createdAt: entry.createdAt,
     }));
   },
 
   async getMyTransactions(userId: string) {
-    const transactions = await prisma.chipTransaction.findMany({
-      where: { userId },
-      include: { table: { select: { name: true, code: true } } },
-      orderBy: { createdAt: "desc" },
-      take: 200,
-    });
+    const entries = await readKeyed<ChipLedgerEntry>(paths.userLedger(userId));
 
-    return transactions.map((t) => ({
-      id: t.id,
-      tableName: t.table.name,
-      tableCode: t.table.code,
-      type: t.type,
-      amount: t.amount,
-      description: t.description,
-      createdAt: t.createdAt,
+    return newestFirst(entries).map((entry) => ({
+      id: entry.id,
+      tableName: entry.tableName,
+      tableCode: entry.tableCode,
+      type: entry.type,
+      amount: entry.amount,
+      description: entry.description ?? null,
+      createdAt: entry.createdAt,
     }));
   },
 };

@@ -27,11 +27,9 @@ ou saem de cada rodada, com pote calculado e auditado inteiramente no backend.
 
 **Backend:** Node.js, Express, TypeScript, Zod (validação), JWT + bcrypt (autenticação).
 
-**Banco de dados:** SQLite (desenvolvimento) via Prisma ORM. Os campos do tipo
-enum são armazenados como `String` porque o conector SQLite do Prisma não
-suporta enums nativos — os valores válidos são impostos na camada TypeScript
-(`server/src/utils/enums.ts`). Ao migrar para PostgreSQL, esses campos podem
-virar `enum` reais no `schema.prisma`.
+**Banco de dados:** Firebase Realtime Database. Todo o acesso passa por um único
+módulo (`server/src/database/realtime.ts`), então trocar o SDK web pelo Admin SDK
+(service account) depois é uma mudança contida a esse arquivo.
 
 **Tempo real:** Socket.IO (um socket por usuário autenticado via JWT, entrando
 na "sala" da mesa após conectar).
@@ -58,13 +56,9 @@ poker-mals/
 │       ├── services/       # Regras de negócio (auth, table, round, chip, history)
 │       ├── middleware/     # requireAuth, errorHandler
 │       ├── socket/         # Servidor Socket.IO + helpers de emissão
-│       ├── database/       # Cliente Prisma
+│       ├── database/       # Acesso ao Realtime Database (realtime.ts) + models
 │       ├── utils/          # AppError, JWT, enums, asyncHandler
-│       └── tests/          # Testes Vitest + Supertest
-│
-├── prisma/
-│   └── schema.prisma       # Modelos: User, Table, TablePlayer, Round,
-│                            # RoundPlayer, ChipTransaction, Action
+│       └── tests/          # Testes Vitest + Supertest (emulador)
 │
 ├── .env.example
 └── package.json             # Workspace raiz (scripts para client + server)
@@ -81,13 +75,36 @@ rota HTTP autenticada. O servidor:
 4. Confirma que a rodada está `EM_ANDAMENTO` e a mesa não está `PAUSADA`.
 5. Recalcula o valor necessário (nunca aceita o pote/saldo vindo do cliente).
 6. Confirma que o jogador possui fichas suficientes.
-7. Só então aplica a transação, sempre dentro de uma transação Prisma
-   (`$transaction`) que atualiza `TablePlayer.chips`, `RoundPlayer.contributed`,
-   `Round.potTotal`, grava um `ChipTransaction` e um `Action`, e emite o evento
-   Socket.IO correspondente.
+7. Só então aplica a mudança, dentro de uma transação do Realtime Database sobre
+   o nó `/tables/{id}`, que atualiza de forma atômica as fichas do jogador, a
+   contribuição dele na rodada, o pote e de quem é a vez; em seguida grava o
+   histórico/extrato e emite o evento Socket.IO correspondente.
+
+Os passos 1–6 acontecem **dentro** da transação, ou seja, são validados contra o
+valor que está prestes a ser gravado e não contra uma leitura anterior — dois
+cliques simultâneos não conseguem gastar as mesmas fichas duas vezes.
 
 O frontend nunca decide saldo, pote ou vencedor — ele só reflete o que o
 backend retorna.
+
+### Formato dos dados
+
+```
+/users/{userId}                 conta + carteira
+/usernames/{username}           -> userId   (unicidade)
+/emails/{email}                 -> userId   (unicidade)
+/tableCodes/{CODE}              -> tableId  (unicidade)
+/tables/{tableId}               meta + jogadores + rodada atual
+/tableHistory/{tableId}/{id}    log de ações (append-only)
+/userLedger/{userId}/{id}       extrato de fichas (append-only)
+```
+
+Tudo que precisa mudar junto numa aposta fica sob o mesmo nó `/tables/{tableId}`,
+porque uma transação do Realtime Database cobre uma subárvore. O histórico e o
+extrato ficam fora dele de propósito, para que as transações continuem pequenas.
+
+> Chaves do Realtime Database não aceitam `.`, `#`, `$`, `[`, `]` ou `/`, então
+> emails são escapados antes de virarem chave (`encodeKey` em `realtime.ts`).
 
 ## Instalação
 
@@ -106,36 +123,50 @@ Veja `.env.example` na raiz do projeto. As principais variáveis:
 
 | Variável              | Descrição                                                        |
 | ---------------------- | ------------------------------------------------------------------ |
-| `DATABASE_URL`         | Conexão do Prisma. Padrão: `file:./dev.db` (SQLite, relativo a `prisma/`). |
-| `JWT_SECRET`           | Segredo usado para assinar os tokens JWT.                          |
+| `JWT_SECRET`           | Segredo usado para assinar os tokens JWT. **Este é um segredo de verdade.** |
 | `JWT_EXPIRES_IN`       | Validade do token (ex: `7d`).                                      |
-| `PORT`                 | Porta do servidor Express + Socket.IO (padrão `4000`).             |
-| `CORS_ORIGIN`          | Origem(ns) permitidas para chamadas de API/Socket.IO.              |
-| `DEFAULT_USER_CHIPS`   | Fichas iniciais do "carteira" do usuário ao se cadastrar (cosmético no dashboard). |
-| `VITE_API_URL`         | URL da API usada pelo frontend.                                    |
-| `VITE_SOCKET_URL`      | URL do servidor Socket.IO usada pelo frontend.                     |
+| `PORT`                 | Porta do servidor Express + Socket.IO (padrão `4000`; o Render injeta sozinho). |
+| `CORS_ORIGIN`          | Origem(ns) permitidas — irrelevante quando front e back ficam na mesma origem. |
+| `DEFAULT_USER_CHIPS`   | Fichas iniciais da carteira do usuário ao se cadastrar (cosmético no dashboard). |
+| `FIREBASE_*`           | Config web do Firebase. **Não são segredos** (veja a seção de segurança). O código já traz os valores do projeto como padrão. |
+| `FIREBASE_DATABASE_URL`| URL do Realtime Database. Depende da região do banco — não vem no snippet do console. |
+| `FIREBASE_DATABASE_EMULATOR_HOST` | Se preenchido, usa o emulador local em vez do projeto real. Vazio em produção. |
+| `VITE_API_URL` / `VITE_SOCKET_URL` | Deixe vazios quando o backend serve o frontend. |
 
 O `client/vite.config.ts` aponta `envDir` para a raiz do projeto, então um único
 arquivo `.env` na raiz abastece tanto o servidor quanto o cliente.
 
-## Banco de dados e migrações
+## Banco de dados
 
-O schema fica em `prisma/schema.prisma` (fora de `server/`, para facilitar uma
-futura troca de SQLite → PostgreSQL sem mexer em código da aplicação).
+Não há migrations: o Realtime Database é schemaless e os nós são criados sob
+demanda. Basta apontar `FIREBASE_DATABASE_URL` para o banco certo.
+
+Para desenvolver sem tocar no projeto real, suba o emulador e aponte o servidor
+para ele:
 
 ```bash
-npm run prisma:generate   # gera o Prisma Client
-npm run prisma:migrate    # cria/aplica migrations e o banco SQLite (prisma/dev.db)
-npm run prisma:studio     # abre o Prisma Studio para inspecionar os dados
+npm run emulator                                   # emulador na porta 9000
+FIREBASE_DATABASE_EMULATOR_HOST=127.0.0.1:9000 npm run dev:server
 ```
 
-### Migrando para PostgreSQL no futuro
+### Segurança do Firebase (leia antes de publicar)
 
-1. Troque `provider = "sqlite"` por `provider = "postgresql"` em `prisma/schema.prisma`.
-2. Aponte `DATABASE_URL` para a string de conexão do Postgres.
-3. (Opcional) Converta os campos `String` documentados como "enum-like" (ver
-   comentários no `schema.prisma`) para `enum` nativos do Postgres.
-4. Rode `npx prisma migrate dev` novamente.
+A `apiKey` da config web **não é um segredo** — ela identifica o projeto e é
+feita para ficar pública no bundle do frontend. Quem protege os dados são as
+**regras do Realtime Database**.
+
+Este projeto está configurado para rodar com as regras abertas (`true`), o que
+significa que **qualquer pessoa que conheça o ID do projeto pode ler e escrever
+direto no banco, por fora do app** — inclusive alterar fichas e potes. As regras
+de DIRE/jogador implementadas no backend continuam valendo para quem usa o app
+normalmente, mas não impedem o acesso direto.
+
+Para blindar, o caminho é: gerar uma *service account* no Firebase Console
+(Configurações do projeto → Contas de serviço → Gerar nova chave privada),
+trocar o SDK web pelo Admin SDK dentro de `server/src/database/realtime.ts` —
+o único arquivo que fala com o banco — e então fechar as regras
+(`{"rules": {".read": false, ".write": false}}`). O Admin SDK ignora as regras,
+então o app continua funcionando e o acesso direto deixa de existir.
 
 ## Como iniciar
 
@@ -161,30 +192,18 @@ Configuração do Web Service no Render:
 
 - **Build Command:** `npm install; npm run build`
 - **Start Command:** `npm start`
-  (equivale a `prisma migrate deploy --schema prisma/schema.prisma && npm run start -w server` —
-  aplica as migrations pendentes e então inicia `server/dist/index.js`)
 - **Environment Variables:**
   - `JWT_SECRET` — um valor aleatório/longo (obrigatório)
-  - `DATABASE_URL` — `file:./dev.db` (padrão do `.env.example`; veja o aviso abaixo)
-  - `CORS_ORIGIN` — pode manter o padrão, já que front e back ficam na mesma origem
+  - `FIREBASE_DATABASE_URL` — só se o banco não estiver em `us-central1`
+    (o padrão do código é `https://poker-326a4-default-rtdb.firebaseio.com`)
   - `DEFAULT_USER_CHIPS` — opcional, padrão `1000`
-  - **Não** defina `PORT` nem `VITE_API_URL`/`VITE_SOCKET_URL` — o Render injeta
-    `PORT` automaticamente, e deixando as variáveis `VITE_*` de fora o frontend
-    já assume "mesma origem" em produção.
+  - **Não** defina `PORT`, `FIREBASE_DATABASE_EMULATOR_HOST` nem
+    `VITE_API_URL`/`VITE_SOCKET_URL` — o Render injeta `PORT` automaticamente,
+    o emulador só existe em desenvolvimento, e deixar as `VITE_*` de fora faz o
+    frontend assumir "mesma origem".
 
-> ⚠️ **Persistência do SQLite no Render.** O disco de um Web Service do Render
-> sem um *persistent disk* é efêmero: o arquivo `prisma/dev.db` (e, portanto,
-> todas as mesas, fichas e histórico) é **recriado do zero a cada novo deploy**.
-> Para uma demonstração isso é aceitável, mas para persistir dados entre
-> deploys você tem duas opções:
->
-> 1. Adicionar um [Persistent Disk](https://render.com/docs/disks) montado em,
->    por exemplo, `/var/data`, e apontar `DATABASE_URL=file:/var/data/dev.db`.
-> 2. Migrar para PostgreSQL (recomendado para produção — o schema já foi
->    desenhado para isso, veja "Migrando para PostgreSQL" acima): crie um banco
->    Postgres no Render (ou use um serviço gerenciado), troque `provider` em
->    `prisma/schema.prisma` para `"postgresql"` e aponte `DATABASE_URL` para a
->    connection string fornecida.
+Como os dados agora vivem no Firebase, o disco efêmero do Render deixou de ser
+um problema: nada é perdido entre deploys.
 
 Se preferir implantar o frontend separadamente (ex: como Static Site na Vercel/
 Netlify) em vez do modo "um único serviço", defina `VITE_API_URL` e
@@ -199,8 +218,9 @@ npm test                # roda a suíte do backend (Vitest + Supertest)
 cd server && npx vitest run
 ```
 
-Os testes usam um banco SQLite isolado (`prisma/test.db`, criado/recriado via
-`prisma db push` no `globalSetup` do Vitest) e cobrem, entre outras coisas:
+O `globalSetup` do Vitest sobe um **emulador do Realtime Database** e o derruba
+ao final, então a suíte nunca toca no projeto real do Firebase (requer Java, que
+o emulador usa). Os testes cobrem, entre outras coisas:
 
 - Cadastro, login (por email ou usuário) e autenticação via JWT.
 - Criação de mesa e definição automática do DIRE.

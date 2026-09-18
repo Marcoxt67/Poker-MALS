@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import { prisma } from "../database/prisma";
+import { authService } from "../services/authService";
 import { AppError } from "../utils/AppError";
 import { verifyToken } from "../utils/jwt";
 
@@ -31,7 +31,7 @@ export const requireAuth = async (req: Request, _res: Response, next: NextFuncti
     const token = header.slice("Bearer ".length);
     const payload = verifyToken(token);
 
-    const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+    const user = await authService.findById(payload.userId);
     if (!user) {
       throw AppError.unauthorized("Usuário não encontrado.");
     }
@@ -41,7 +41,7 @@ export const requireAuth = async (req: Request, _res: Response, next: NextFuncti
       username: user.username,
       displayName: user.displayName,
       email: user.email,
-      avatar: user.avatar,
+      avatar: user.avatar ?? null,
       chips: user.chips,
     };
 

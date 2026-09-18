@@ -12,16 +12,12 @@
     "dev:server": "npm run dev -w server",
     "dev:client": "npm run dev -w client",
     "build": "npm run build -w server && npm run build -w client",
-    "start": "prisma migrate deploy --schema prisma/schema.prisma && npm run start -w server",
+    "start": "npm run start -w server",
     "test": "npm run test -w server",
-    "prisma:generate": "prisma generate --schema prisma/schema.prisma",
-    "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma",
-    "prisma:studio": "prisma studio --schema prisma/schema.prisma"
-  },
-  "dependencies": {
-    "prisma": "^5.20.0"
+    "emulator": "firebase emulators:start --only database --project poker-326a4"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^9.1.0",
+    "firebase-tools": "^15.30.2"
   }
 }

@@ -1,7 +1,8 @@
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { prisma } from "../database/prisma";
 import { config } from "../config";
+import { UserNode } from "../database/models";
+import { newId, nowIso, paths, readPath, removePath, transact, writePath } from "../database/realtime";
 import { AppError } from "../utils/AppError";
 import { signToken } from "../utils/jwt";
 
@@ -28,68 +29,85 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Informe sua senha."),
 });
 
-const publicUser = (user: {
-  id: string;
-  username: string;
-  displayName: string;
-  email: string;
-  avatar: string | null;
-  chips: number;
-  createdAt: Date;
-}) => ({
+export const publicUser = (user: UserNode) => ({
   id: user.id,
   username: user.username,
   displayName: user.displayName,
   email: user.email,
-  avatar: user.avatar,
+  avatar: user.avatar ?? null,
   chips: user.chips,
   createdAt: user.createdAt,
 });
 
+/**
+ * The Realtime Database has no unique constraints, so `usernames/{lower}` and
+ * `emails/{lower}` act as reservation nodes: claiming one is a transaction that
+ * only succeeds when it is still free.
+ */
+const reserve = async (path: string, userId: string, takenMessage: string) => {
+  await transact<string>(path, (current) => {
+    if (current !== null) return { error: AppError.conflict(takenMessage) };
+    return { next: userId };
+  });
+};
+
 export const authService = {
   async register(input: z.infer<typeof registerSchema>) {
-    const existingEmail = await prisma.user.findUnique({ where: { email: input.email.toLowerCase() } });
-    if (existingEmail) throw AppError.conflict("Este email já está em uso.");
-
-    const existingUsername = await prisma.user.findUnique({ where: { username: input.username } });
-    if (existingUsername) throw AppError.conflict("Este nome de usuário já está em uso.");
+    const usernameLower = input.username.toLowerCase();
+    const emailLower = input.email.toLowerCase();
+    const userId = newId();
 
     const passwordHash = await bcrypt.hash(input.password, 10);
 
-    const user = await prisma.user.create({
-      data: {
-        username: input.username,
-        displayName: input.displayName,
-        email: input.email.toLowerCase(),
-        passwordHash,
-        chips: config.defaultUserChips,
-      },
-    });
+    await reserve(paths.email(emailLower), userId, "Este email já está em uso.");
+    try {
+      await reserve(paths.username(usernameLower), userId, "Este nome de usuário já está em uso.");
+    } catch (err) {
+      await removePath(paths.email(emailLower));
+      throw err;
+    }
 
-    const token = signToken({ userId: user.id });
-    return { user: publicUser(user), token };
+    const user: UserNode = {
+      id: userId,
+      username: input.username,
+      usernameLower,
+      displayName: input.displayName,
+      email: emailLower,
+      passwordHash,
+      avatar: null,
+      chips: config.defaultUserChips,
+      createdAt: nowIso(),
+    };
+
+    await writePath(paths.user(userId), user);
+
+    return { user: publicUser(user), token: signToken({ userId }) };
   },
 
   async login(input: z.infer<typeof loginSchema>) {
     const identifier = input.identifier.toLowerCase();
-    const user = await prisma.user.findFirst({
-      where: {
-        OR: [{ email: identifier }, { username: input.identifier }],
-      },
-    });
 
+    const userId =
+      (await readPath<string>(paths.email(identifier))) ?? (await readPath<string>(paths.username(identifier)));
+
+    if (!userId) throw AppError.unauthorized("Email/usuário ou senha inválidos.");
+
+    const user = await readPath<UserNode>(paths.user(userId));
     if (!user) throw AppError.unauthorized("Email/usuário ou senha inválidos.");
 
     const valid = await bcrypt.compare(input.password, user.passwordHash);
     if (!valid) throw AppError.unauthorized("Email/usuário ou senha inválidos.");
 
-    const token = signToken({ userId: user.id });
-    return { user: publicUser(user), token };
+    return { user: publicUser(user), token: signToken({ userId }) };
   },
 
   async me(userId: string) {
-    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const user = await readPath<UserNode>(paths.user(userId));
     if (!user) throw AppError.notFound("Usuário não encontrado.");
     return publicUser(user);
+  },
+
+  async findById(userId: string) {
+    return readPath<UserNode>(paths.user(userId));
   },
 };

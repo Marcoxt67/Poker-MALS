@@ -48,6 +48,14 @@ export interface RoundView {
   players: RoundPlayerView[];
 }
 
+/** Extra table-wide numbers only the DIRE is shown. */
+export interface DireSummary {
+  seatedCount: number;
+  totalChipsInPlay: number;
+  potTotal: number;
+  roundNumber: number;
+}
+
 export interface TableView {
   id: string;
   name: string;
@@ -66,6 +74,7 @@ export interface TableView {
   myRole: TablePlayerRole | null;
   players: TablePlayerView[];
   activeRound: RoundView | null;
+  direSummary: DireSummary | null;
 }
 
 export interface HistoryEntry {
